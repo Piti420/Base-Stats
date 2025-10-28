@@ -1,3 +1,5 @@
+'use client';
+
 import { BaseDashboard } from '@/components/BaseDashboard';
 import { motion } from 'framer-motion';
 

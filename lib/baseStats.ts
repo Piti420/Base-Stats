@@ -43,7 +43,7 @@ export async function getBaseStats(): Promise<Partial<BaseStats>> {
 }
 
 export function formatGasPrice(gasPrice: bigint): string {
-  return formatUnits(gasPrice, 'gwei');
+  return formatUnits(gasPrice, 9); // 9 decimals for gwei
 }
 
 export function formatDate(timestamp: number): string {

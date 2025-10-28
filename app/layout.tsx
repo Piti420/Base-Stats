@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Providers } from "./providers";
 
 export const metadata: Metadata = {
   title: "Base Stats - Blockchain Analytics",
@@ -23,7 +24,9 @@ export default function RootLayout({
         <meta property="fc:frame:image" content="https://base-stats.vercel.app/og-image.png" />
         <meta property="og:image" content="https://base-stats.vercel.app/og-image.png" />
       </head>
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

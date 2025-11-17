@@ -28,7 +28,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
 
     if (!response.ok) {
       if (response.status === 404) {
-        return { onchainScore: null, basename: cleanBasename };
+        return { onchainScore: null, builderScore: null, basename: cleanBasename };
       }
       throw new Error(`base.org API error: ${response.status} ${response.statusText}`);
     }
@@ -36,23 +36,37 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     const html = await response.text();
     console.log('Fetched HTML length:', html.length);
     
+    // Limit HTML size to prevent memory issues (max 5MB)
+    const maxHtmlSize = 5 * 1024 * 1024; // 5MB
+    const htmlToParse = html.length > maxHtmlSize ? html.substring(0, maxHtmlSize) : html;
+    console.log('Parsing HTML of length:', htmlToParse.length);
+    
     // Save a sample of HTML for debugging (first 10000 chars)
-    if (html.length > 0) {
-      console.log('HTML sample (first 10000 chars):', html.substring(0, 10000));
+    if (htmlToParse.length > 0) {
+      console.log('HTML sample (first 10000 chars):', htmlToParse.substring(0, 10000));
     }
     
     // Look for JSON data in script tags (common in Next.js/React apps)
     const scriptTagPattern = /<script[^>]*>(.*?)<\/script>/gis;
     const scriptMatches = [];
     let match;
-    while ((match = scriptTagPattern.exec(html)) !== null) {
-      scriptMatches.push(match[1]);
+    let scriptCount = 0;
+    const maxScripts = 50; // Limit to prevent memory issues
+    try {
+      while ((match = scriptTagPattern.exec(htmlToParse)) !== null && scriptCount < maxScripts) {
+        if (match[1] && match[1].length < 200000) { // Skip very large scripts
+          scriptMatches.push(match[1]);
+          scriptCount++;
+        }
+      }
+      console.log('Found', scriptMatches.length, 'script tags (limited to', maxScripts, ')');
+    } catch (e) {
+      console.error('Error extracting script tags:', e);
     }
-    console.log('Found', scriptMatches.length, 'script tags');
     
     // Look for __NEXT_DATA__ or similar JSON data
     const nextDataPattern = /__NEXT_DATA__\s*=\s*({.*?});/s;
-    const nextDataMatch = html.match(nextDataPattern);
+    const nextDataMatch = htmlToParse.match(nextDataPattern);
     if (nextDataMatch) {
       console.log('Found __NEXT_DATA__');
       try {
@@ -87,7 +101,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     ];
 
     for (const pattern of onchainScorePatterns) {
-      const match = html.match(pattern);
+      const match = htmlToParse.match(pattern);
       if (match && match[1]) {
         const score = parseInt(match[1], 10);
         if (score >= 0 && score <= 100) {
@@ -140,7 +154,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     // Look for sections with "Activity" or "Builder Activity"
     if (!onchainScore || !builderScore) {
       // Try to find Activity section - look for broader context
-      const activityMatches = html.matchAll(/Activity[\s\S]{0,1000}?(\d+)\s*\/\s*100/gi);
+      const activityMatches = htmlToParse.matchAll(/Activity[\s\S]{0,1000}?(\d+)\s*\/\s*100/gi);
       for (const match of activityMatches) {
         if (!onchainScore && match[1]) {
           const score = parseInt(match[1], 10);
@@ -153,7 +167,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
       }
       
       // Try to find Builder Activity section - look for broader context
-      const builderActivityMatches = html.matchAll(/Builder[\s\S]{0,500}?Activity[\s\S]{0,1000}?(\d{2,4})(?!\s*\/)/gi);
+      const builderActivityMatches = htmlToParse.matchAll(/Builder[\s\S]{0,500}?Activity[\s\S]{0,1000}?(\d{2,4})(?!\s*\/)/gi);
       for (const match of builderActivityMatches) {
         if (!builderScore && match[1]) {
           const score = parseInt(match[1], 10);
@@ -167,7 +181,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
       
       // Last resort: look for any number near "Builder" that's 100+
       if (!builderScore) {
-        const builderNumberMatches = html.matchAll(/Builder[\s\S]{0,200}?(\d{2,4})(?!\s*\/)/gi);
+        const builderNumberMatches = htmlToParse.matchAll(/Builder[\s\S]{0,200}?(\d{2,4})(?!\s*\/)/gi);
         for (const match of builderNumberMatches) {
           if (match[1]) {
             const score = parseInt(match[1], 10);
@@ -182,7 +196,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
       
       // Also try to find numbers in data attributes or React props
       const dataAttrPattern = /data-[^=]*score[^=]*=["'](\d+)["']/gi;
-      const dataMatches = html.matchAll(dataAttrPattern);
+      const dataMatches = htmlToParse.matchAll(dataAttrPattern);
       for (const match of dataMatches) {
         if (match[1]) {
           const score = parseInt(match[1], 10);
@@ -236,16 +250,25 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     
     // Try to find in __NEXT_DATA__ or other JSON in script tags
     if (!onchainScore || !builderScore) {
-      // Look for any JSON in script tags
-      for (const scriptContent of scriptMatches) {
+      // Look for any JSON in script tags (limit to first 20 to avoid memory issues)
+      const maxScripts = Math.min(20, scriptMatches.length);
+      for (let i = 0; i < maxScripts; i++) {
+        const scriptContent = scriptMatches[i];
+        if (!scriptContent || scriptContent.length > 100000) {
+          // Skip very large scripts to avoid memory issues
+          continue;
+        }
+        
         try {
           // Try to find JSON objects in script content
           const jsonPattern = /\{[^{}]*(?:"onchainScore"|"onchain_score"|"builderScore"|"builder_score"|"activity"|"builder")[^{}]*\}/gi;
           const jsonMatches = scriptContent.match(jsonPattern);
           if (jsonMatches) {
-            for (const jsonStr of jsonMatches) {
+            // Limit to first 10 matches
+            const maxMatches = Math.min(10, jsonMatches.length);
+            for (let j = 0; j < maxMatches; j++) {
               try {
-                const jsonData = JSON.parse(jsonStr);
+                const jsonData = JSON.parse(jsonMatches[j]);
                 if (jsonData.onchainScore || jsonData.onchain_score) {
                   const score = Number(jsonData.onchainScore || jsonData.onchain_score);
                   if (score >= 0 && score <= 100 && !onchainScore) {
@@ -266,37 +289,46 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
             }
           }
           
-          // Also try to parse entire script as JSON if it looks like JSON
-          if (scriptContent.trim().startsWith('{') || scriptContent.trim().startsWith('[')) {
+          // Also try to parse entire script as JSON if it looks like JSON (but only if small)
+          if (scriptContent.trim().length < 50000 && (scriptContent.trim().startsWith('{') || scriptContent.trim().startsWith('['))) {
             try {
               const jsonData = JSON.parse(scriptContent);
-              // Recursively search for scores
+              // Recursively search for scores with depth limit
+              let depth = 0;
+              const maxDepth = 10;
               const searchInObject = (obj: any, path = ''): void => {
+                if (depth > maxDepth) return;
                 if (typeof obj !== 'object' || obj === null) return;
-                for (const [key, value] of Object.entries(obj)) {
-                  const currentPath = path ? `${path}.${key}` : key;
-                  if (typeof value === 'number') {
-                    if ((key.toLowerCase().includes('onchain') && key.toLowerCase().includes('score')) && value >= 0 && value <= 100 && !onchainScore) {
-                      onchainScore = value;
-                      console.log('Found Onchain Score in nested JSON:', value, 'at', currentPath);
+                depth++;
+                try {
+                  for (const [key, value] of Object.entries(obj)) {
+                    const currentPath = path ? `${path}.${key}` : key;
+                    if (typeof value === 'number') {
+                      if ((key.toLowerCase().includes('onchain') && key.toLowerCase().includes('score')) && value >= 0 && value <= 100 && !onchainScore) {
+                        onchainScore = value;
+                        console.log('Found Onchain Score in nested JSON:', value, 'at', currentPath);
+                      }
+                      if ((key.toLowerCase().includes('builder') && key.toLowerCase().includes('score')) && value >= 0 && !builderScore) {
+                        builderScore = value;
+                        console.log('Found Builder Score in nested JSON:', value, 'at', currentPath);
+                      }
                     }
-                    if ((key.toLowerCase().includes('builder') && key.toLowerCase().includes('score')) && value >= 0 && !builderScore) {
-                      builderScore = value;
-                      console.log('Found Builder Score in nested JSON:', value, 'at', currentPath);
+                    if (typeof value === 'object' && value !== null) {
+                      searchInObject(value, currentPath);
                     }
                   }
-                  if (typeof value === 'object') {
-                    searchInObject(value, currentPath);
-                  }
+                } finally {
+                  depth--;
                 }
               };
               searchInObject(jsonData);
             } catch (e) {
-              // Not valid JSON, continue
+              // Not valid JSON or too large, continue
             }
           }
         } catch (e) {
           // Continue searching
+          console.error('Error parsing script content:', e);
         }
       }
     }
@@ -308,7 +340,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     ];
 
     for (const pattern of onchainDataPatterns) {
-      const match = html.match(pattern);
+      const match = htmlToParse.match(pattern);
       if (match && match[1]) {
         const score = parseInt(match[1], 10);
         if (score >= 0 && score <= 100) {
@@ -323,7 +355,7 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
     ];
 
     for (const pattern of builderDataPatterns) {
-      const match = html.match(pattern);
+      const match = htmlToParse.match(pattern);
       if (match && match[1]) {
         const score = parseInt(match[1], 10);
         if (score >= 0) {
@@ -339,27 +371,27 @@ export async function fetchBaseOrgOnchainScore(basename: string): Promise<BaseOr
       console.log('Builder Score found:', builderScore);
       
       // Look for any numbers that might be scores
-      const allNumbers = html.match(/\b(\d{2,3})\b/g);
+      const allNumbers = htmlToParse.match(/\b(\d{2,3})\b/g);
       if (allNumbers) {
         console.log('All 2-3 digit numbers found in HTML:', allNumbers.slice(0, 20));
       }
       
       // Look for "70" or "119" specifically
-      const score70 = html.indexOf('70');
-      const score119 = html.indexOf('119');
+      const score70 = htmlToParse.indexOf('70');
+      const score119 = htmlToParse.indexOf('119');
       if (score70 !== -1) {
         console.log('Found "70" at position:', score70);
-        const context70 = html.substring(Math.max(0, score70 - 100), Math.min(html.length, score70 + 100));
+        const context70 = htmlToParse.substring(Math.max(0, score70 - 100), Math.min(htmlToParse.length, score70 + 100));
         console.log('Context around "70":', context70);
       }
       if (score119 !== -1) {
         console.log('Found "119" at position:', score119);
-        const context119 = html.substring(Math.max(0, score119 - 100), Math.min(html.length, score119 + 100));
+        const context119 = htmlToParse.substring(Math.max(0, score119 - 100), Math.min(htmlToParse.length, score119 + 100));
         console.log('Context around "119":', context119);
       }
       
       // Look for "/100" pattern
-      const score100 = html.match(/(\d+)\s*\/\s*100/g);
+      const score100 = htmlToParse.match(/(\d+)\s*\/\s*100/g);
       if (score100) {
         console.log('Found numbers with /100:', score100);
       }
